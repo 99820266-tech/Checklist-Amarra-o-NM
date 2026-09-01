@@ -315,18 +315,94 @@ def calcular_status(df):
   return df, colunas_perguntas
 
 
-def estilizar_tabela(val):
-  val_str = str(val).upper().strip()
+# =========================================================
+# TABELA HTML COM QUEBRA DE TEXTO (substitui st.dataframe)
+# =========================================================
+COLS_TEXTO_LONGO = ("obs", "observa", "motivo", "justificativa")
+
+
+def _cor_celula(col_lower, valor):
+  val_str = str(valor).upper().strip()
   if val_str in VALORES_NOK or val_str == "NOK":
-    return "background-color: #FED7D7; color: #742A2A; font-weight: bold;"
+    return "background-color:#FED7D7;color:#742A2A;font-weight:bold;"
   elif val_str in VALORES_NA:
-    return "background-color: #EDF2F7; color: #718096; font-weight: bold;"
+    return "background-color:#EDF2F7;color:#718096;font-weight:bold;"
   elif val_str in VALORES_OK or val_str == "OK":
-    return "background-color: #C6F6D5; color: #22543D; font-weight: bold;"
+    return "background-color:#C6F6D5;color:#22543D;font-weight:bold;"
   return ""
 
 
-def criar_grafico_linha_limpo(df, cor_linha):
+def renderizar_tabela_html(df, altura=260):
+  if df.empty:
+    st.info("Nenhum registro para os filtros selecionados.")
+    return
+
+  colunas_html = []
+  for c in df.columns:
+    c_lower = str(c).lower()
+    eh_texto_longo = any(k in c_lower for k in COLS_TEXTO_LONGO)
+    # Cabeçalho quebra o texto em até 4 linhas (altura fixa) em vez de
+    # cortar com "..." — assim dá pra ler a pergunta inteira sem estourar
+    # a altura da tabela.
+    largura_cab = (
+        "min-width:200px;max-width:260px;white-space:normal;"
+        if eh_texto_longo
+        else "min-width:160px;max-width:190px;white-space:normal;"
+        "word-break:break-word;"
+    )
+    titulo_col = str(c).upper().replace("'", "&#39;")
+    colunas_html.append(
+        f"<th style='{largura_cab}'>{titulo_col}</th>"
+    )
+
+  linhas_html = []
+  for _, row in df.iterrows():
+    celulas = []
+    for c in df.columns:
+      c_lower = str(c).lower()
+      eh_texto_longo = any(k in c_lower for k in COLS_TEXTO_LONGO)
+      wrap_style = (
+          "white-space:normal;word-break:break-word;min-width:200px;"
+          "max-width:260px;"
+          if eh_texto_longo
+          else "white-space:nowrap;min-width:160px;max-width:190px;"
+          "overflow:hidden;text-overflow:ellipsis;"
+      )
+      cor_style = _cor_celula(c_lower, row[c])
+      titulo_completo = str(row[c]).replace("'", "&#39;")
+      celulas.append(
+          f"<td style='{wrap_style}{cor_style}' title='{titulo_completo}'>"
+          f"{row[c]}</td>"
+      )
+    linhas_html.append(f"<tr>{''.join(celulas)}</tr>")
+
+  html = f"""
+  <div style="max-height:{altura}px; overflow-y:auto; overflow-x:auto;
+              border:1px solid #CBD5E0; border-radius:6px;">
+    <table style="border-collapse:collapse; width:max-content; min-width:100%;
+                   font-size:12.5px; font-family: 'Source Sans Pro', sans-serif;
+                   table-layout:auto;">
+      <thead>
+        <tr style="position:sticky; top:0; background:#2D3748; color:white;
+                   z-index:1;">
+          {''.join(colunas_html)}
+        </tr>
+      </thead>
+      <tbody>
+        {''.join(linhas_html)}
+      </tbody>
+    </table>
+  </div>
+  <style>
+    td, th {{ padding: 5px 8px; border: 1px solid #E2E8F0; text-align: left; vertical-align: top; line-height: 1.3; }}
+    thead th {{ max-height: 90px; }}
+  </style>
+  """
+  st.markdown(html, unsafe_allow_html=True)
+
+
+def criar_grafico_semanal(df, cor_linha):
+  """Gráfico limpo mostrando apenas os últimos 7 dias com registro."""
   if df.empty:
     return
   col_d = next((c for c in df.columns if "data" in c), None)
@@ -334,45 +410,48 @@ def criar_grafico_linha_limpo(df, cor_linha):
     return
 
   df_g = df.groupby(col_d).size().reset_index(name="Total")
-  df_g = df_g.sort_values(by=col_d, ascending=True)
+  df_g["_ord"] = pd.to_datetime(df_g[col_d], format="%d/%m/%Y", errors="coerce")
+  df_g = df_g.sort_values("_ord")
+  df_g = df_g.tail(7)  # só a última semana com dados
 
-  linha = (
+  if df_g.empty:
+    return
+
+  ordem_datas = df_g[col_d].tolist()
+
+  barras = (
       alt.Chart(df_g)
-      .mark_line(color=cor_linha, strokeWidth=3)
+      .mark_bar(color=cor_linha, cornerRadiusTopLeft=4, cornerRadiusTopRight=4, size=26)
       .encode(
-          x=alt.X(f"{col_d}:N", title="Dias Anteriores"),
-          y=alt.Y("Total:Q", title="Qtd Total"),
-          tooltip=[col_d, "Total"],
+          x=alt.X(
+              f"{col_d}:N",
+              title=None,
+              sort=ordem_datas,
+              axis=alt.Axis(labelAngle=0, labelFontSize=11, domain=False, tickSize=0),
+          ),
+          y=alt.Y(
+              "Total:Q",
+              title=None,
+              axis=alt.Axis(grid=False, labels=False, ticks=False),
+          ),
+          tooltip=[alt.Tooltip(f"{col_d}:N", title="Data"), alt.Tooltip("Total:Q", title="Qtd")],
       )
   )
-  pontos = (
+  rotulos = (
       alt.Chart(df_g)
-      .mark_point(color=cor_linha, size=60, filled=True)
+      .mark_text(dy=-8, fontSize=12, fontWeight="bold", color="#2D3748")
       .encode(
-          x=alt.X(f"{col_d}:N"),
-          y=alt.Y("Total:Q"),
-          tooltip=[col_d, "Total"],
-      )
-  )
-  texto = (
-      alt.Chart(df_g)
-      .mark_text(
-          align="center",
-          baseline="bottom",
-          dy=-10,
-          fontSize=12,
-          fontWeight="bold",
-          color="#2D3748",
-      )
-      .encode(
-          x=alt.X(f"{col_d}:N"),
-          y=alt.Y("Total:Q"),
+          x=alt.X(f"{col_d}:N", sort=ordem_datas),
+          y="Total:Q",
           text="Total:Q",
       )
   )
 
   st.altair_chart(
-      (linha + pontos + texto).properties(height=180),
+      (barras + rotulos)
+      .properties(height=170)
+      .configure_view(strokeWidth=0)
+      .configure_axis(domainColor="#E2E8F0"),
       use_container_width=True,
   )
 
@@ -389,7 +468,7 @@ def processar_bloco_operacional(df_bruto, chave, data_sel, turno_sel, busca):
 
   if df_bruto.empty:
     st.warning(f"Sem dados cadastrados para {titulo}.")
-    return pd.DataFrame()
+    return pd.DataFrame(), []
 
   df, colunas_perguntas = calcular_status(df_bruto)
 
@@ -434,20 +513,66 @@ def processar_bloco_operacional(df_bruto, chave, data_sel, turno_sel, busca):
 
   col_tab, col_graf = st.columns([2, 1])
   with col_tab:
-    st.dataframe(
-        df_filtrado.style.map(estilizar_tabela),
-        use_container_width=True,
-        height=230,
-    )
+    renderizar_tabela_html(df_filtrado, altura=230)
   with col_graf:
     st.markdown(
         "<p style='text-align: center; font-weight: bold; color: #4A5568;"
-        " margin-bottom: 2px;'>📈 Tendência de Preenchimento Diário</p>",
+        " margin-bottom: 2px;'>📈 Histórico (última semana)</p>",
         unsafe_allow_html=True,
     )
-    criar_grafico_linha_limpo(df, cor_grafico)
+    criar_grafico_semanal(df, cor_grafico)
 
-  return df_filtrado
+  return df_filtrado, colunas_perguntas
+
+
+def montar_resumo_nok(resultados, data_sel, turno_sel):
+  """Monta um resumo consolidado das ocorrências NOK de todos os checklists."""
+  linhas_resumo = []
+
+  for chave, (df_filtrado, colunas_perguntas) in resultados.items():
+    if df_filtrado.empty or not colunas_perguntas:
+      continue
+    titulo_curto = CHECKLISTS[chave]["titulo"].split(". ", 1)[-1]
+    col_resp = next(
+        (
+            c
+            for c in df_filtrado.columns
+            if any(k in c for k in ["responsável", "responsavel", "nome", "placa"])
+        ),
+        None,
+    )
+    col_obs = next(
+        (
+            c
+            for c in df_filtrado.columns
+            if any(k in c for k in ["obs", "observa", "motivo", "justificativa"])
+        ),
+        None,
+    )
+
+    nok_df = df_filtrado[df_filtrado["status checklist"] == "NOK"]
+    for _, row in nok_df.iterrows():
+      itens_falhos = [
+          c for c in colunas_perguntas
+          if str(row[c]).upper().strip() in VALORES_NOK
+      ]
+      linhas_resumo.append({
+          "checklist": titulo_curto,
+          "responsável / identificação": row[col_resp] if col_resp else "-",
+          "item(ns) reprovado(s)": "; ".join(itens_falhos) if itens_falhos else "-",
+          "observação": row[col_obs] if col_obs else "-",
+      })
+
+  st.markdown("### 🚨 Resumo de Ocorrências NOK")
+  st.caption(f"Filtro atual: {data_sel} — Turno: {turno_sel}")
+
+  if not linhas_resumo:
+    st.success("Nenhuma ocorrência NOK encontrada para os filtros selecionados. ✅")
+    return
+
+  df_resumo = pd.DataFrame(linhas_resumo)
+  st.error(f"{len(df_resumo)} ocorrência(s) NOK encontrada(s).")
+  renderizar_tabela_html(df_resumo, altura=220)
 
 
 # =========================================================
@@ -504,39 +629,20 @@ if todas_datas:
       " dados renovam automaticamente a cada 30s"
   )
 
-  # PROCESSAMENTO E EXIBIÇÃO DAS 3 ÁREAS
-  df_f = processar_bloco_operacional(
+  # PROCESSAMENTO DAS 3 ÁREAS (guarda resultado para montar o resumo)
+  resultados = {}
+  resultados["ferramentas"] = processar_bloco_operacional(
       dados["ferramentas"], "ferramentas", data_sel, turno_sel, busca
   )
-  df_e = processar_bloco_operacional(
+  resultados["epis"] = processar_bloco_operacional(
       dados["epis"], "epis", data_sel, turno_sel, busca
   )
-  df_v = processar_bloco_operacional(
+  resultados["veiculos"] = processar_bloco_operacional(
       dados["veiculos"], "veiculos", data_sel, turno_sel, busca
   )
 
-  # =========================================================
-  # EXPORTAÇÃO DE DADOS
-  # =========================================================
   st.markdown("---")
-  st.markdown("### 📥 Exportar Relatórios")
-
-  buffer_geral = io.BytesIO()
-  with pd.ExcelWriter(buffer_geral, engine="openpyxl") as writer:
-    if not df_f.empty:
-      df_f.to_excel(writer, sheet_name="Ferramentas", index=False)
-    if not df_e.empty:
-      df_e.to_excel(writer, sheet_name="EPIs", index=False)
-    if not df_v.empty:
-      df_v.to_excel(writer, sheet_name="Veiculos", index=False)
-
-  st.download_button(
-      label="📊 Baixar Todos os Dados do Dia (.xlsx)",
-      data=buffer_geral.getvalue(),
-      file_name=f"Checklists_Completos_{data_sel.replace('/','-')}.xlsx",
-      mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      use_container_width=True,
-  )
+  montar_resumo_nok(resultados, data_sel, turno_sel)
 
 else:
   st.info("Aguardando sincronização com os bancos de dados do Zoho Forms...")
